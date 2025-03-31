@@ -141,7 +141,7 @@ fn test_gen_fmc_alias_cert_mldsa87() {
     let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 FMC Alias", "Caliptra 2.0 MlDsa87 LDevID");
 
     // Generate the code
-    CodeGen::gen_code("FmcAliasCertTbsMldDsa87", template, out_dir);
+    CodeGen::gen_code("FmcAliasCertTbsMlDsa87", template, out_dir);
 }
 
 #[test]
