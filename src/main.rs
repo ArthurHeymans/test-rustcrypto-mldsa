@@ -9,38 +9,62 @@ fn main() {
     //    test_gen_fmc_alias_cert_template();
 }
 
-// Make the test function public so it can be called from main
-// #[test]
-// pub fn test_gen_mldsa87_cert_template() {
-//     use crate::code_gen::CodeGen;
-//     use crate::cert_rustcrypto::CertTemplateBuilder;
-//     use ml_dsa::MlDsa87;
-//     use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+#[test]
+fn test_gen_init_devid_csr_mldsa87() {
+    use crate::code_gen::CodeGen;
+    use crate::csr_rustcrypto::CsrTemplateBuilder;
+    use ml_dsa::MlDsa87;
+    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
 
-//     // Create a temporary directory for output
-//     let temp_dir = std::env::temp_dir();
-//     let out_dir = temp_dir.to_str().unwrap();
+    // Create a temporary directory for output
+    let temp_dir = std::env::temp_dir();
+    let out_dir = temp_dir.to_str().unwrap();
 
-//     // Set up key usage for certificate signing
-//     let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
+    // Set up key usage for certificate signing
+    let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
 
-//     // Create the Certificate template builder with ML-DSA-87
-//     let bldr = CertTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
-//         .add_ueid_ext(&[0xFF; 17])
-//         .add_basic_constraints_ext(true, 5)
-//         .add_key_usage_ext(key_usage);
+    // Create the CSR template builder with ML-DSA-87
+    let bldr = CsrTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
+        .add_ueid_ext(&[0xFF; 17])
+        .add_basic_constraints_ext(true, 5)
+        .add_key_usage_ext(key_usage);
 
-//     // Generate the template with subject and issuer names
-//     let template = bldr.tbs_template("ML-DSA-87 Test Subject", "ML-DSA-87 Test Issuer");
+    // Generate the template with a subject name
+    let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 IDevID");
 
-//     // Generate code from the template
-//     CodeGen::gen_code("MlDsa87CertTbs", template, out_dir);
-
-//     println!("Generated ML-DSA-87 Certificate template code in: {}", out_dir);
-// }
+    // Generate code from the template
+    CodeGen::gen_code("InitDevIdCsrTbsMlDsa87", template, out_dir);
+}
 
 #[test]
-fn test_gen_fmc_alias_cert_template() {
+fn test_gen_fmc_alias_csr_mldsa87() {
+    use crate::code_gen::CodeGen;
+    use crate::csr_rustcrypto::CsrTemplateBuilder;
+    use ml_dsa::MlDsa87;
+    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+
+    // Create a temporary directory for output
+    let temp_dir = std::env::temp_dir();
+    let out_dir = temp_dir.to_str().unwrap();
+
+    // Set up key usage for certificate signing
+    let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
+
+    // Create the CSR template builder with ML-DSA-87
+    let bldr = CsrTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
+        .add_ueid_ext(&[0xFF; 17])
+        .add_basic_constraints_ext(true, 5)
+        .add_key_usage_ext(key_usage);
+
+    // Generate the template with a subject name
+    let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 FMC Alias");
+
+    // Generate code from the template
+    CodeGen::gen_code("FmcAliasTbsMlDsa87", template, out_dir);
+}
+
+#[test]
+fn test_gen_local_devid_cert_mldsa87() {
     use crate::cert_rustcrypto::CertTemplateBuilder;
     use crate::code_gen::CodeGen;
     use ml_dsa::MlDsa87;
@@ -60,16 +84,14 @@ fn test_gen_fmc_alias_cert_template() {
         .add_ueid_ext(&[0xFF; 17]);
 
     // Generate the template with subject and issuer CN
-    let template = bldr.tbs_template("Caliptra 1.0 FMC Alias", "Caliptra 1.0 LDevID");
+    let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 LDevID", "Caliptra 2.0 MlDsa87 IDevID");
 
     // Generate the code
     CodeGen::gen_code("FmcAliasCertTbsMlDsa87", template, out_dir);
-
-    println!("Generated FMC Alias certificate template at: {}", out_dir);
 }
 
 #[test]
-fn test_gen_fmc_alias_cert_with_tcb_info() {
+fn test_gen_fmc_alias_cert_mldsa87() {
     use crate::cert_rustcrypto::{CertTemplateBuilder, Fwid, FwidParam};
     use crate::code_gen::CodeGen;
     use const_oid::ObjectIdentifier;
@@ -116,42 +138,9 @@ fn test_gen_fmc_alias_cert_with_tcb_info() {
         );
 
     // Generate the template with subject and issuer CN
-    let template = bldr.tbs_template("Caliptra 1.0 FMC Alias", "Caliptra 1.0 LDevID");
+    let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 FMC Alias", "Caliptra 2.0 MlDsa87 LDevID");
 
     // Generate the code
-    CodeGen::gen_code("FmcAliasCertTbsWithTcbInfo", template, out_dir);
-
-    println!(
-        "Generated FMC Alias certificate with TCB info template at: {}",
-        out_dir
-    );
+    CodeGen::gen_code("FmcAliasCertTbsMldDsa87", template, out_dir);
 }
 
-#[test]
-fn test_gen_mldsa87_csr_template() {
-    use crate::code_gen::CodeGen;
-    use crate::csr_rustcrypto::CsrTemplateBuilder;
-    use ml_dsa::MlDsa87;
-    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
-
-    // Create a temporary directory for output
-    let temp_dir = std::env::temp_dir();
-    let out_dir = temp_dir.to_str().unwrap();
-
-    // Set up key usage for certificate signing
-    let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
-
-    // Create the CSR template builder with ML-DSA-87
-    let bldr = CsrTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
-        .add_ueid_ext(&[0xFF; 17])
-        .add_basic_constraints_ext(true, 5)
-        .add_key_usage_ext(key_usage);
-
-    // Generate the template with a subject name
-    let template = bldr.tbs_template("ML-DSA-87 Test Certificate");
-
-    // Generate code from the template
-    CodeGen::gen_code("MlDsa87CsrTbs", template, out_dir);
-
-    println!("Generated ML-DSA-87 CSR template code in: {}", out_dir);
-}
