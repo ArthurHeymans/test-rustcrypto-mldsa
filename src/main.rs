@@ -87,7 +87,7 @@ fn test_gen_local_devid_cert_mldsa87() {
     let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 LDevID", "Caliptra 2.0 MlDsa87 IDevID");
 
     // Generate the code
-    CodeGen::gen_code("LocalDevIdCsrTbsMlDsa87", template, out_dir);
+    CodeGen::gen_code("LocalDevIdCertTbsMlDsa87", template, out_dir);
 }
 
 #[test]
