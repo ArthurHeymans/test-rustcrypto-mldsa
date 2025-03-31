@@ -29,7 +29,7 @@ use x509_cert::builder::profile::devid::DevId;
 use x509_cert::builder::{Builder, CertificateBuilder};
 use x509_cert::der::Encode;
 use x509_cert::ext::{
-    pkix::{AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier},
+    pkix::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     AsExtension, Extension,
 };
 use x509_cert::name::Name;
@@ -72,6 +72,17 @@ pub struct FwidParam<'a> {
 }
 
 const TCG_MULTI_TCB_INFO_OID: &str = "2.23.133.5.4.5";
+
+// DICE flag bits
+const FLAG_BIT_NOT_CONFIGURED: u32 = 1 << 0;
+const FLAG_BIT_NOT_SECURE: u32 = 1 << 1;
+const FLAG_BIT_DEBUG: u32 = 1 << 3;
+const FLAG_BIT_FIXED_WIDTH: u32 = 1 << 31;
+
+const FLAG_MASK: u32 = FLAG_BIT_NOT_CONFIGURED 
+    | FLAG_BIT_NOT_SECURE 
+    | FLAG_BIT_DEBUG 
+    | FLAG_BIT_FIXED_WIDTH;
 
 fn fixed_width_svn(svn: u8) -> u16 {
     (1_u16 << 8) | svn as u16
@@ -239,8 +250,7 @@ where
         let wide_svn = fixed_width_svn(svn);
         let wide_svn_fuses = fixed_width_svn(svn_fuses);
 
-        // We no longer need be_flags since we use hardcoded values
-        //        let be_flags_mask = FLAG_MASK.reverse_bits().to_be_bytes();
+        // No need to create a local variable for the mask
 
         // Create the device info TcbInfo
         let device_fwids_vec: Vec<Fwid> = device_fwids
@@ -262,8 +272,8 @@ where
             flags: Some(&[0xc0, 0xc1, 0xc2, 0xc3]),
             vendor_info: None,
             tcb_type: Some(b"DEVICE_INFO"),
-            //          flags_mask: Some(&be_flags_mask),
-            flags_mask: None,
+            // Directly insert the flag mask bytes (FLAG_MASK.reverse_bits().to_be_bytes())
+            flags_mask: Some(&[0xD0, 0x00, 0x00, 0x01]),
         };
 
         // Create the FMC info TcbInfo
