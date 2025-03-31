@@ -301,6 +301,17 @@ dependencies = [
 
 [[package]]
 name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
 version = "0.11.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9540978cef7a8498211c1b1c14e5ce920fe5bd524ea84f4a3d72d4602515ae93"
@@ -373,6 +384,7 @@ dependencies = [
  "ml-dsa",
  "quote",
  "rand",
+ "sha1 0.10.6",
  "sha2",
  "signature",
  "spki",
@@ -438,7 +450,7 @@ dependencies = [
  "async-signature",
  "const-oid",
  "der",
- "sha1",
+ "sha1 0.11.0-pre.4",
  "signature",
  "spki",
  "tls_codec",
