@@ -87,7 +87,7 @@ fn test_gen_local_devid_cert_mldsa87() {
     let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 LDevID", "Caliptra 2.0 MlDsa87 IDevID");
 
     // Generate the code
-    CodeGen::gen_code("FmcAliasCertTbsMlDsa87", template, out_dir);
+    CodeGen::gen_code("LocalDevIdCsrTbsMlDsa87", template, out_dir);
 }
 
 #[test]
@@ -142,5 +142,46 @@ fn test_gen_fmc_alias_cert_mldsa87() {
 
     // Generate the code
     CodeGen::gen_code("FmcAliasCertTbsMldDsa87", template, out_dir);
+}
+
+#[test]
+fn test_gen_rt_alias_cert_mldsa87() {
+    use crate::cert_rustcrypto::{CertTemplateBuilder, Fwid, FwidParam};
+    use crate::code_gen::CodeGen;
+    use const_oid::ObjectIdentifier;
+    use ml_dsa::MlDsa87;
+    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+
+    // Create a temporary directory for output
+    let temp_dir = std::env::temp_dir();
+    let out_dir = temp_dir.to_str().unwrap();
+
+    // Create KeyUsage with key_cert_sign set to true and digital_signature set to true
+    let key_usage = KeyUsage((KeyUsages::KeyCertSign | KeyUsages::DigitalSignature).into());
+
+    // SHA-384 OID
+    let sha384_oid = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.2");
+
+    // Create RT FWID parameter
+    let rt_fwids = [FwidParam {
+        name: "TCB_INFO_RT_TCI",
+        fwid: Fwid {
+            hash_alg: sha384_oid,
+            digest: &[0xCD; 48],
+        },
+    }];
+
+    // Build the RT Alias certificate template with TCB info
+    let bldr = CertTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
+        .add_basic_constraints_ext(true, 2)
+        .add_key_usage_ext(key_usage)
+        .add_ueid_ext(&[0xFF; 17])
+        .add_rt_dice_tcb_info_ext(0xC4, &rt_fwids);
+
+    // Generate the template with subject and issuer CN
+    let template = bldr.tbs_template("Caliptra 2.0 MlDsa87 RT Alias", "Caliptra 2.0 MlDsa87 FMC Alias");
+
+    // Generate the code
+    CodeGen::gen_code("RtAliasCertTbsMlDsa87", template, out_dir);
 }
 
