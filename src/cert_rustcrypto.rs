@@ -16,18 +16,16 @@ use std::str::FromStr;
 
 use crate::tbs::{get_tbs, init_param, sanitize, TbsParam, TbsTemplate};
 use const_oid::{AssociatedOid, ObjectIdentifier};
-use der::asn1::GeneralizedTime;
-use x509_cert::builder::profile::devid::DevId;
 use core::marker::PhantomData;
 use der::asn1::UtcTime;
-use x509_cert::time::Time;
+use der::DateTime;
 use der::Decode;
 use der::Sequence;
-use der::DateTime;
 use ml_dsa::{KeyGen, MlDsa87};
 use sha2::{Digest, Sha256};
 use signature::Keypair;
 use spki::EncodePublicKey;
+use x509_cert::builder::profile::devid::DevId;
 use x509_cert::builder::{Builder, CertificateBuilder};
 use x509_cert::der::Encode;
 use x509_cert::ext::{
@@ -36,6 +34,7 @@ use x509_cert::ext::{
 };
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
+use x509_cert::time::Time;
 use x509_cert::time::Validity;
 
 /// CSR Template Param
@@ -61,46 +60,92 @@ impl<'a> AsExtension for TcgUeid<'a> {
 }
 
 #[derive(Sequence, Debug)]
-struct Fwid<'a> {
-    hash_alg: ObjectIdentifier,
+pub struct Fwid<'a> {
+    pub hash_alg: ObjectIdentifier,
     #[asn1(type = "BIT STRING")]
-    digest: &'a [u8],
+    pub digest: &'a [u8],
+}
+
+pub struct FwidParam<'a> {
+    pub name: &'static str,
+    pub fwid: Fwid<'a>,
+}
+
+const TCG_MULTI_TCB_INFO_OID: &str = "2.23.133.5.4.5";
+
+fn fixed_width_svn(svn: u8) -> u16 {
+    (1_u16 << 8) | svn as u16
 }
 
 #[derive(Sequence, Debug)]
-#[asn1(tag_mode="IMPLICIT")]
+struct MultiTcbInfo<'a> {
+    tcb_infos: Vec<TcbInfo<'a>>,
+}
+
+impl<'a> AssociatedOid for MultiTcbInfo<'a> {
+    const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap(TCG_MULTI_TCB_INFO_OID);
+}
+
+impl<'a> AsExtension for MultiTcbInfo<'a> {
+    fn critical(&self, _subject: &Name, _extensions: &[Extension]) -> bool {
+        true
+    }
+}
+
+#[derive(Sequence, Debug)]
+#[asn1(tag_mode = "IMPLICIT")]
 struct TcbInfo<'a> {
     #[asn1(context_specific = "0", optional = "true", type = "UTF8String")]
     vendor: Option<String>,
-    
+
     #[asn1(context_specific = "1", optional = "true", type = "UTF8String")]
     model: Option<String>,
-    
+
     #[asn1(context_specific = "2", optional = "true", type = "UTF8String")]
     version: Option<String>,
-    
+
     #[asn1(context_specific = "3", optional = "true", tag_mode = "IMPLICIT")]
     svn: Option<u32>,
-    
+
     #[asn1(context_specific = "4", optional = "true", tag_mode = "IMPLICIT")]
     layer: Option<u64>,
-    
+
     #[asn1(context_specific = "5", optional = "true", tag_mode = "IMPLICIT")]
     index: Option<u64>,
-    
+
     #[asn1(context_specific = "6", optional = "true", tag_mode = "IMPLICIT")]
     fwids: Option<Vec<Fwid<'a>>>,
-    
-    #[asn1(context_specific = "7", optional = "true", type = "BIT STRING", tag_mode = "IMPLICIT")]
+
+    #[asn1(
+        context_specific = "7",
+        optional = "true",
+        type = "BIT STRING",
+        tag_mode = "IMPLICIT"
+    )]
     flags: Option<&'a [u8]>,
-    
-    #[asn1(context_specific = "8", optional = "true", type = "OCTET STRING", tag_mode = "IMPLICIT")]
+
+    #[asn1(
+        context_specific = "8",
+        optional = "true",
+        type = "OCTET STRING",
+        tag_mode = "IMPLICIT"
+    )]
     vendor_info: Option<&'a [u8]>,
-    
-    #[asn1(context_specific = "9", optional = "true", type = "OCTET STRING", tag_mode = "IMPLICIT")]
+
+    #[asn1(
+        context_specific = "9",
+        optional = "true",
+        type = "OCTET STRING",
+        tag_mode = "IMPLICIT"
+    )]
     tcb_type: Option<&'a [u8]>,
-    
-    #[asn1(context_specific = "10", optional = "true", type = "BIT STRING", tag_mode = "IMPLICIT")]
+
+    #[asn1(
+        context_specific = "10",
+        optional = "true",
+        type = "BIT STRING",
+        tag_mode = "IMPLICIT"
+    )]
     flags_mask: Option<&'a [u8]>,
 }
 
@@ -114,12 +159,12 @@ impl<'a> AsExtension for TcbInfo<'a> {
     }
 }
 
-
 /// CSR Tempate Builder
 pub struct CertTemplateBuilder<'a, Key> {
     basic_constraints: Option<BasicConstraints>,
     key_usage: Option<KeyUsage>,
     tcg_ueid: Option<TcgUeid<'a>>,
+    multi_tcb_info: Option<MultiTcbInfo<'a>>,
     params: Vec<CertTemplateParam>,
     _phantom: PhantomData<Key>,
 }
@@ -152,6 +197,7 @@ where
             basic_constraints: None,
             key_usage: None,
             tcg_ueid: None,
+            multi_tcb_info: None,
         }
     }
 
@@ -179,6 +225,110 @@ where
         self
     }
 
+    pub fn add_fmc_dice_tcb_info_ext(
+        mut self,
+        device_fwids: &'a [FwidParam<'a>],
+        fmc_fwids: &'a [FwidParam<'a>],
+    ) -> Self {
+        // This method of finding the offsets is fragile. Especially for the 1 byte values.
+        // These may need to be updated to stay unique when the cert template is updated.
+        let flags: u32 = 0xC0C1C2C3;
+        let svn: u8 = 0xC4;
+        let svn_fuses: u8 = 0xC6;
+
+        let wide_svn = fixed_width_svn(svn);
+        let wide_svn_fuses = fixed_width_svn(svn_fuses);
+
+        // We no longer need be_flags since we use hardcoded values
+        //        let be_flags_mask = FLAG_MASK.reverse_bits().to_be_bytes();
+
+        // Create the device info TcbInfo
+        let device_fwids_vec: Vec<Fwid> = device_fwids
+            .iter()
+            .map(|f| Fwid {
+                hash_alg: f.fwid.hash_alg.clone(),
+                digest: f.fwid.digest,
+            })
+            .collect();
+
+        let device_info = TcbInfo {
+            vendor: None,
+            model: None,
+            version: None,
+            svn: Some(wide_svn_fuses as u32),
+            layer: None,
+            index: None,
+            fwids: Some(device_fwids_vec),
+            flags: Some(&[0xc0, 0xc1, 0xc2, 0xc3]),
+            vendor_info: None,
+            tcb_type: Some(b"DEVICE_INFO"),
+            //          flags_mask: Some(&be_flags_mask),
+            flags_mask: None,
+        };
+
+        // Create the FMC info TcbInfo
+        let fmc_fwids_vec: Vec<Fwid> = fmc_fwids
+            .iter()
+            .map(|f| Fwid {
+                hash_alg: f.fwid.hash_alg.clone(),
+                digest: f.fwid.digest,
+            })
+            .collect();
+
+        let fmc_info = TcbInfo {
+            vendor: None,
+            model: None,
+            version: None,
+            svn: Some(wide_svn as u32),
+            layer: None,
+            index: None,
+            fwids: Some(fmc_fwids_vec),
+            flags: None,
+            vendor_info: None,
+            tcb_type: Some(b"FMC_INFO"),
+            flags_mask: None,
+        };
+
+        // Create the MultiTcbInfo extension
+        let multi_tcb_info = MultiTcbInfo {
+            tcb_infos: vec![device_info, fmc_info],
+        };
+
+        // Add parameters for template generation
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new("tcb_info_flags", 0, std::mem::size_of_val(&flags)),
+            needle: flags.to_be_bytes().to_vec(),
+        });
+
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new("tcb_info_fw_svn", 0, std::mem::size_of_val(&svn)),
+            needle: svn.to_be_bytes().to_vec(),
+        });
+
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new(
+                "tcb_info_fw_svn_fuses",
+                0,
+                std::mem::size_of_val(&svn_fuses),
+            ),
+            needle: svn_fuses.to_be_bytes().to_vec(),
+        });
+
+        for fwid in device_fwids.iter().chain(fmc_fwids.iter()) {
+            self.params.push(CertTemplateParam {
+                tbs_param: TbsParam::new(fwid.name, 0, fwid.fwid.digest.len()),
+                needle: fwid.fwid.digest.to_vec(),
+            });
+        }
+
+        self.multi_tcb_info = Some(multi_tcb_info);
+
+        // TODO: Complete implementation to add the extension to the certificate builder
+        // This part would require more work with the RustCrypto builder API
+
+        self
+    }
+
     pub fn tbs_template(mut self, subject_cn: &str, issuer_cn: &str) -> TbsTemplate {
         let subject_key = Key::key_gen();
         let issuer_key = Key::key_gen();
@@ -201,10 +351,7 @@ where
         };
         self.params.push(param);
 
-        let validity = Validity::new(
-            Time::UtcTime(not_before),
-            Time::UtcTime(not_after),
-        );
+        let validity = Validity::new(Time::UtcTime(not_before), Time::UtcTime(not_after));
 
         // Set the serial number
         let serial_number_bytes = [0x7fu8; 20];
@@ -243,7 +390,6 @@ where
             spki::SubjectPublicKeyInfo::from_der(issuer_pk_der.as_bytes()).unwrap();
         let issuer_pk_bytes = issuer_spki.subject_public_key.as_bytes().unwrap().to_vec();
 
-
         let issuer_key_hash = hex::encode(Sha256::digest(&issuer_pk_bytes)).to_uppercase();
         let issuer = format!("CN={},serialNumber={}", issuer_cn, issuer_key_hash);
         let issuer_name = Name::from_str(&issuer).unwrap();
@@ -266,6 +412,10 @@ where
             builder.add_extension(&ueid).unwrap();
         }
 
+        if let Some(ref multi_tcb_info) = self.multi_tcb_info {
+            builder.add_extension(multi_tcb_info).unwrap();
+        }
+
         let req = builder.build(&issuer_key).unwrap();
         let der = req.to_der().unwrap();
 
@@ -274,12 +424,53 @@ where
         let mut tbs = get_tbs(der);
 
         // Calculate the offset of parameters and sanitize the TBS section
-        let params = self
-            .params
-            .iter()
-            .map(|p| sanitize(init_param(&p.needle, &tbs, p.tbs_param), &mut tbs))
-            .collect();
-        // Create the template
-        TbsTemplate::new(tbs, params)
+        // Use a retry approach to handle parameters that may only be uniquely identifiable
+        // after other parameters have been sanitized
+        let mut found_params = Vec::new();
+        let mut remaining_params: Vec<&CertTemplateParam> = self.params.iter().collect();
+
+        // Keep going until we find all params or make no progress
+        loop {
+            let start_count = found_params.len();
+            let mut still_remaining = Vec::new();
+
+            // Try to find each remaining parameter
+            for param in remaining_params {
+                match std::panic::catch_unwind(|| init_param(&param.needle, &tbs, param.tbs_param))
+                {
+                    Ok(initialized_param) => {
+                        // Successfully found this parameter
+                        let sanitized_param = sanitize(initialized_param, &mut tbs);
+                        found_params.push(sanitized_param);
+                    }
+                    Err(_) => {
+                        // Couldn't find this parameter yet, keep it for next iteration
+                        still_remaining.push(param);
+                    }
+                }
+            }
+
+            // Update the remaining parameters for next iteration
+            remaining_params = still_remaining;
+
+            // Stop if we found all parameters or made no progress
+            if remaining_params.is_empty() || found_params.len() == start_count {
+                break;
+            }
+        }
+
+        // Check if we have any parameters that couldn't be found
+        if !remaining_params.is_empty() {
+            eprintln!(
+                "Warning: {} parameters could not be found:",
+                remaining_params.len()
+            );
+            for param in &remaining_params {
+                eprintln!("  - {}", param.tbs_param.name);
+            }
+        }
+
+        // Create the template with the parameters we found
+        TbsTemplate::new(tbs, found_params)
     }
 }
