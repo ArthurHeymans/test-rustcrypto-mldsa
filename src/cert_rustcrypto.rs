@@ -176,6 +176,7 @@ pub struct CertTemplateBuilder<'a, Key> {
     key_usage: Option<KeyUsage>,
     tcg_ueid: Option<TcgUeid<'a>>,
     multi_tcb_info: Option<MultiTcbInfo<'a>>,
+    single_tcb_info: Option<TcbInfo<'a>>,
     params: Vec<CertTemplateParam>,
     _phantom: PhantomData<Key>,
 }
@@ -209,6 +210,7 @@ where
             key_usage: None,
             tcg_ueid: None,
             multi_tcb_info: None,
+            single_tcb_info: None,
         }
     }
 
@@ -339,6 +341,51 @@ where
         self
     }
 
+    pub fn add_rt_dice_tcb_info_ext(mut self, svn: u8, fwids: &'a [FwidParam<'a>]) -> Self {
+        let wide_svn = fixed_width_svn(svn);
+
+        // Create the RT info TcbInfo
+        let rt_fwids_vec: Vec<Fwid> = fwids
+            .iter()
+            .map(|f| Fwid {
+                hash_alg: f.fwid.hash_alg.clone(),
+                digest: f.fwid.digest,
+            })
+            .collect();
+
+        let rt_info = TcbInfo {
+            vendor: None,
+            model: None,
+            version: None,
+            svn: Some(wide_svn as u32),
+            layer: None,
+            index: None,
+            fwids: Some(rt_fwids_vec),
+            flags: None,
+            vendor_info: None,
+            tcb_type: Some(b"RT_INFO"),
+            flags_mask: None,
+        };
+
+        // Add parameters for template generation
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new("tcb_info_fw_svn", 0, std::mem::size_of_val(&svn)),
+            needle: svn.to_be_bytes().to_vec(),
+        });
+
+        for fwid in fwids.iter() {
+            self.params.push(CertTemplateParam {
+                tbs_param: TbsParam::new(fwid.name, 0, fwid.fwid.digest.len()),
+                needle: fwid.fwid.digest.to_vec(),
+            });
+        }
+
+        // Store the TcbInfo
+        self.single_tcb_info = Some(rt_info);
+
+        self
+    }
+
     pub fn tbs_template(mut self, subject_cn: &str, issuer_cn: &str) -> TbsTemplate {
         let subject_key = Key::key_gen();
         let issuer_key = Key::key_gen();
@@ -425,6 +472,10 @@ where
 
         if let Some(ref multi_tcb_info) = self.multi_tcb_info {
             builder.add_extension(multi_tcb_info).unwrap();
+        }
+
+        if let Some(ref single_tcb_info) = self.single_tcb_info {
+            builder.add_extension(single_tcb_info).unwrap();
         }
 
         // Add Subject Key Identifier
