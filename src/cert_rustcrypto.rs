@@ -29,7 +29,7 @@ use x509_cert::builder::profile::devid::DevId;
 use x509_cert::builder::{Builder, CertificateBuilder};
 use x509_cert::der::Encode;
 use x509_cert::ext::{
-    pkix::{BasicConstraints, KeyUsage},
+    pkix::{AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     AsExtension, Extension,
 };
 use x509_cert::name::Name;
@@ -394,14 +394,15 @@ where
         let issuer = format!("CN={},serialNumber={}", issuer_cn, issuer_key_hash);
         let issuer_name = Name::from_str(&issuer).unwrap();
         let param = CertTemplateParam {
-            tbs_param: TbsParam::new("SUBJECT_SN", 0, issuer_key_hash.len()),
+            tbs_param: TbsParam::new("ISSUER_SN", 0, issuer_key_hash.len()),
             needle: issuer_key_hash.into_bytes(),
         };
         self.params.push(param);
 
         let profile = DevId::new(issuer_name, subject_name, None).unwrap();
 
-        let mut builder = CertificateBuilder::new(profile, serial_number, validity, subject_spki)
+        // Clone subject_spki before passing it to CertificateBuilder because it's needed later
+        let mut builder = CertificateBuilder::new(profile, serial_number, validity, subject_spki.clone())
             .expect("Create certificate");
 
         if let Some(basic_constraints) = self.basic_constraints {
@@ -416,61 +417,59 @@ where
             builder.add_extension(multi_tcb_info).unwrap();
         }
 
+        // Add Subject Key Identifier
+        let subject_key_bytes = subject_spki.subject_public_key.as_bytes().unwrap();
+        let subject_key_hash = sha1::Sha1::digest(subject_key_bytes).as_slice().to_vec();
+        let subject_key_octet = der::asn1::OctetString::new(subject_key_hash.clone()).unwrap();
+        let subject_key_id = SubjectKeyIdentifier::from(subject_key_octet);
+        builder.add_extension(&subject_key_id).unwrap();
+
+        // Add Authority Key Identifier
+        let issuer_key_bytes = issuer_spki.subject_public_key.as_bytes().unwrap();
+        let issuer_key_hash = sha1::Sha1::digest(issuer_key_bytes).as_slice().to_vec();
+        // Somehow this ends up twice in extensions if we do this?
+        // let authority_key_id = AuthorityKeyIdentifier {
+        //     key_identifier: Some(der::asn1::OctetString::new(issuer_key_hash.clone()).unwrap()),
+        //     authority_cert_issuer: None,
+        //     authority_cert_serial_number: None,
+        // };
+        // builder.add_extension(&authority_key_id).unwrap();
+
+        // Add parameters for template generation
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new("SUBJECT_KEY_ID", 0, subject_key_hash.len()),
+            needle: subject_key_hash,
+        });
+
+        self.params.push(CertTemplateParam {
+            tbs_param: TbsParam::new("AUTHORITY_KEY_ID", 0, issuer_key_hash.len()),
+            needle: issuer_key_hash,
+        });
+
         let req = builder.build(&issuer_key).unwrap();
         let der = req.to_der().unwrap();
+
+        // Decode the DER data back into a CertReq to verify it worked
+        let decoded = x509_cert::certificate::Certificate::from_der(&der).unwrap();
+        dbg!(decoded);
+
 
         // TODO move get_tbs from x509_openssl
         // Retrieve the To be signed portion from the CSR
         let mut tbs = get_tbs(der);
 
+        // Match long params first to ensure a subset is not sanitized by a short param.
+        self.params
+            .sort_by(|a, b| a.needle.len().cmp(&b.needle.len()).reverse());
+
         // Calculate the offset of parameters and sanitize the TBS section
-        // Use a retry approach to handle parameters that may only be uniquely identifiable
-        // after other parameters have been sanitized
-        let mut found_params = Vec::new();
-        let mut remaining_params: Vec<&CertTemplateParam> = self.params.iter().collect();
+        let params = self
+            .params
+            .iter()
+            .map(|p| sanitize(init_param(&p.needle, &tbs, p.tbs_param), &mut tbs))
+            .collect();
+        // Create the template
+        TbsTemplate::new(tbs, params)
 
-        // Keep going until we find all params or make no progress
-        loop {
-            let start_count = found_params.len();
-            let mut still_remaining = Vec::new();
-
-            // Try to find each remaining parameter
-            for param in remaining_params {
-                match std::panic::catch_unwind(|| init_param(&param.needle, &tbs, param.tbs_param))
-                {
-                    Ok(initialized_param) => {
-                        // Successfully found this parameter
-                        let sanitized_param = sanitize(initialized_param, &mut tbs);
-                        found_params.push(sanitized_param);
-                    }
-                    Err(_) => {
-                        // Couldn't find this parameter yet, keep it for next iteration
-                        still_remaining.push(param);
-                    }
-                }
-            }
-
-            // Update the remaining parameters for next iteration
-            remaining_params = still_remaining;
-
-            // Stop if we found all parameters or made no progress
-            if remaining_params.is_empty() || found_params.len() == start_count {
-                break;
-            }
-        }
-
-        // Check if we have any parameters that couldn't be found
-        if !remaining_params.is_empty() {
-            eprintln!(
-                "Warning: {} parameters could not be found:",
-                remaining_params.len()
-            );
-            for param in &remaining_params {
-                eprintln!("  - {}", param.tbs_param.name);
-            }
-        }
-
-        // Create the template with the parameters we found
-        TbsTemplate::new(tbs, found_params)
     }
 }
