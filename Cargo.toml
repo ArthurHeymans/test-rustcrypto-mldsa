@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 ml-dsa = { git = "https://github.com/RustCrypto/signatures", rev = "e7c698a094c2cca3e28bda0fab4684f21fc5363a" }
-x509-cert = { git = "https://github.com/RustCrypto/formats.git", features = ["builder"] }
+x509-cert = { git = "https://github.com/RustCrypto/formats.git", features = ["builder", "hazmat"] }
 rand = "0.8"
 der = { version = "0.8.0-rc.1", features = ["derive"] }
 spki = {  version = "0.8.0-rc.1", features = ["alloc"] }

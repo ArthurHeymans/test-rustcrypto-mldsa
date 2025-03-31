@@ -1,0 +1,285 @@
+/*++
+
+Licensed under the Apache-2.0 license.
+
+File Name:
+
+    cert_rustcrypto.rs
+
+Abstract:
+
+    File contains generation of X509 Certificate Signing Request (CERT) To Be Signed (TBS)
+    template using RustCrypto that can be substituted at firmware runtime.
+
+--*/
+use std::str::FromStr;
+
+use crate::tbs::{get_tbs, init_param, sanitize, TbsParam, TbsTemplate};
+use const_oid::{AssociatedOid, ObjectIdentifier};
+use der::asn1::GeneralizedTime;
+use x509_cert::builder::profile::devid::DevId;
+use core::marker::PhantomData;
+use der::asn1::UtcTime;
+use x509_cert::time::Time;
+use der::Decode;
+use der::Sequence;
+use der::DateTime;
+use ml_dsa::{KeyGen, MlDsa87};
+use sha2::{Digest, Sha256};
+use signature::Keypair;
+use spki::EncodePublicKey;
+use x509_cert::builder::{Builder, CertificateBuilder};
+use x509_cert::der::Encode;
+use x509_cert::ext::{
+    pkix::{BasicConstraints, KeyUsage},
+    AsExtension, Extension,
+};
+use x509_cert::name::Name;
+use x509_cert::serial_number::SerialNumber;
+use x509_cert::time::Validity;
+
+/// CSR Template Param
+struct CertTemplateParam {
+    tbs_param: TbsParam,
+    needle: Vec<u8>,
+}
+
+#[derive(Sequence, Default, Debug)]
+struct TcgUeid<'a> {
+    #[asn1(type = "OCTET STRING")]
+    ueid: &'a [u8],
+}
+
+impl<'a> AssociatedOid for TcgUeid<'a> {
+    const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.23.133.5.4.4");
+}
+
+impl<'a> AsExtension for TcgUeid<'a> {
+    fn critical(&self, _subject: &Name, _extensions: &[Extension]) -> bool {
+        true
+    }
+}
+
+#[derive(Sequence, Debug)]
+struct Fwid<'a> {
+    hash_alg: ObjectIdentifier,
+    #[asn1(type = "BIT STRING")]
+    digest: &'a [u8],
+}
+
+#[derive(Sequence, Debug)]
+#[asn1(tag_mode="IMPLICIT")]
+struct TcbInfo<'a> {
+    #[asn1(context_specific = "0", optional = "true", type = "UTF8String")]
+    vendor: Option<String>,
+    
+    #[asn1(context_specific = "1", optional = "true", type = "UTF8String")]
+    model: Option<String>,
+    
+    #[asn1(context_specific = "2", optional = "true", type = "UTF8String")]
+    version: Option<String>,
+    
+    #[asn1(context_specific = "3", optional = "true", tag_mode = "IMPLICIT")]
+    svn: Option<u32>,
+    
+    #[asn1(context_specific = "4", optional = "true", tag_mode = "IMPLICIT")]
+    layer: Option<u64>,
+    
+    #[asn1(context_specific = "5", optional = "true", tag_mode = "IMPLICIT")]
+    index: Option<u64>,
+    
+    #[asn1(context_specific = "6", optional = "true", tag_mode = "IMPLICIT")]
+    fwids: Option<Vec<Fwid<'a>>>,
+    
+    #[asn1(context_specific = "7", optional = "true", type = "BIT STRING", tag_mode = "IMPLICIT")]
+    flags: Option<&'a [u8]>,
+    
+    #[asn1(context_specific = "8", optional = "true", type = "OCTET STRING", tag_mode = "IMPLICIT")]
+    vendor_info: Option<&'a [u8]>,
+    
+    #[asn1(context_specific = "9", optional = "true", type = "OCTET STRING", tag_mode = "IMPLICIT")]
+    tcb_type: Option<&'a [u8]>,
+    
+    #[asn1(context_specific = "10", optional = "true", type = "BIT STRING", tag_mode = "IMPLICIT")]
+    flags_mask: Option<&'a [u8]>,
+}
+
+impl<'a> AssociatedOid for TcbInfo<'a> {
+    const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.23.133.5.4.1");
+}
+
+impl<'a> AsExtension for TcbInfo<'a> {
+    fn critical(&self, _subject: &Name, _extensions: &[Extension]) -> bool {
+        true
+    }
+}
+
+
+/// CSR Tempate Builder
+pub struct CertTemplateBuilder<'a, Key> {
+    basic_constraints: Option<BasicConstraints>,
+    key_usage: Option<KeyUsage>,
+    tcg_ueid: Option<TcgUeid<'a>>,
+    params: Vec<CertTemplateParam>,
+    _phantom: PhantomData<Key>,
+}
+
+pub trait BuilderKeys: Sized {
+    type Signature: spki::SignatureBitStringEncoding;
+    fn key_gen() -> Self;
+}
+
+impl BuilderKeys for ml_dsa::KeyPair<MlDsa87> {
+    type Signature = ml_dsa::Signature<MlDsa87>;
+    fn key_gen() -> Self {
+        let mut rng = rand::thread_rng();
+        <MlDsa87 as KeyGen>::key_gen(&mut rng)
+    }
+}
+
+impl<'a, Key> CertTemplateBuilder<'a, Key>
+where
+    Key: BuilderKeys
+        + spki::SignatureAlgorithmIdentifier
+        + Keypair
+        + signature::Signer<<Key as BuilderKeys>::Signature>,
+    Key::VerifyingKey: EncodePublicKey,
+{
+    pub fn new() -> Self {
+        Self {
+            params: Vec::new(),
+            _phantom: PhantomData,
+            basic_constraints: None,
+            key_usage: None,
+            tcg_ueid: None,
+        }
+    }
+
+    pub fn add_basic_constraints_ext(mut self, ca: bool, path_len: u32) -> Self {
+        self.basic_constraints = Some(BasicConstraints {
+            ca,
+            path_len_constraint: Some(path_len as u8),
+        });
+        self
+    }
+
+    pub fn add_key_usage_ext(mut self, usage: KeyUsage) -> Self {
+        self.key_usage = Some(usage);
+        self
+    }
+
+    pub fn add_ueid_ext(mut self, ueid: &'a [u8]) -> Self {
+        self.tcg_ueid = Some(TcgUeid { ueid });
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("UEID", 0, ueid.len()),
+            needle: ueid.to_vec(),
+        };
+        self.params.push(param);
+
+        self
+    }
+
+    pub fn tbs_template(mut self, subject_cn: &str, issuer_cn: &str) -> TbsTemplate {
+        let subject_key = Key::key_gen();
+        let issuer_key = Key::key_gen();
+
+        // Set the valid from time
+        let not_before_dt = DateTime::new(2023, 01, 01, 0, 0, 0).unwrap();
+        let not_before = UtcTime::from_date_time(not_before_dt).unwrap();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("NOT_BEFORE", 0, not_before.to_der().unwrap().len() - 2),
+            needle: not_before.to_der().unwrap()[2..].to_vec(),
+        };
+        self.params.push(param);
+
+        // Set the valid to time
+        let not_after_dt = DateTime::new(2049, 12, 31, 23, 59, 59).unwrap();
+        let not_after = UtcTime::from_date_time(not_after_dt).unwrap();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("NOT_AFTER", 0, not_after.to_der().unwrap().len() - 2),
+            needle: not_after.to_der().unwrap()[2..].to_vec(),
+        };
+        self.params.push(param);
+
+        let validity = Validity::new(
+            Time::UtcTime(not_before),
+            Time::UtcTime(not_after),
+        );
+
+        // Set the serial number
+        let serial_number_bytes = [0x7fu8; 20];
+        let serial_number = SerialNumber::new(&serial_number_bytes).unwrap();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("SERIAL_NUMBER", 0, serial_number_bytes.len()),
+            needle: serial_number_bytes.to_vec(),
+        };
+        self.params.push(param);
+
+        // Get the subject public key and encode it
+        let subject_pk_der = subject_key.verifying_key().to_public_key_der().unwrap();
+        // Parse DER to obtain SubjectPublicKeyInfo and extract public key bytes
+        let subject_spki: spki::SubjectPublicKeyInfo<der::asn1::Any, der::asn1::BitString> =
+            spki::SubjectPublicKeyInfo::from_der(subject_pk_der.as_bytes()).unwrap();
+        let subject_pk_bytes = subject_spki.subject_public_key.as_bytes().unwrap().to_vec();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("PUBLIC_KEY", 0, subject_pk_bytes.len()),
+            needle: subject_pk_bytes.clone(),
+        };
+        self.params.push(param);
+
+        let subject_key_hash = hex::encode(Sha256::digest(&subject_pk_bytes)).to_uppercase();
+        let subject = format!("CN={},serialNumber={}", subject_cn, subject_key_hash);
+        let subject_name = Name::from_str(&subject).unwrap();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("SUBJECT_SN", 0, subject_key_hash.len()),
+            needle: subject_key_hash.into_bytes(),
+        };
+        self.params.push(param);
+
+        // Get the issuer public key and encode it
+        let issuer_pk_der = issuer_key.verifying_key().to_public_key_der().unwrap();
+        // Parse DER to obtain SubjectPublicKeyInfo and extract public key bytes
+        let issuer_spki: spki::SubjectPublicKeyInfo<der::asn1::Any, der::asn1::BitString> =
+            spki::SubjectPublicKeyInfo::from_der(issuer_pk_der.as_bytes()).unwrap();
+        let issuer_pk_bytes = issuer_spki.subject_public_key.as_bytes().unwrap().to_vec();
+
+
+        let issuer_key_hash = hex::encode(Sha256::digest(&issuer_pk_bytes)).to_uppercase();
+        let issuer = format!("CN={},serialNumber={}", issuer_cn, issuer_key_hash);
+        let issuer_name = Name::from_str(&issuer).unwrap();
+        let param = CertTemplateParam {
+            tbs_param: TbsParam::new("SUBJECT_SN", 0, issuer_key_hash.len()),
+            needle: issuer_key_hash.into_bytes(),
+        };
+        self.params.push(param);
+
+        let profile = DevId::new(issuer_name, subject_name, None).unwrap();
+
+        let mut builder = CertificateBuilder::new(profile, serial_number, validity, subject_spki)
+            .expect("Create certificate");
+
+        if let Some(basic_constraints) = self.basic_constraints {
+            builder.add_extension(&basic_constraints).unwrap();
+        }
+
+        if let Some(ueid) = self.tcg_ueid {
+            builder.add_extension(&ueid).unwrap();
+        }
+
+        let req = builder.build(&issuer_key).unwrap();
+        let der = req.to_der().unwrap();
+
+        // TODO move get_tbs from x509_openssl
+        // Retrieve the To be signed portion from the CSR
+        let mut tbs = get_tbs(der);
+
+        // Calculate the offset of parameters and sanitize the TBS section
+        let params = self
+            .params
+            .iter()
+            .map(|p| sanitize(init_param(&p.needle, &tbs, p.tbs_param), &mut tbs))
+            .collect();
+        // Create the template
+        TbsTemplate::new(tbs, params)
+    }
+}

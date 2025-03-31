@@ -1,14 +1,73 @@
-use ml_dsa::{KeyGen, MlDsa87};
-use std::str::FromStr;
-use x509_cert::builder::{Builder, RequestBuilder};
-use x509_cert::der::{Decode, Encode, EncodePem};
-use x509_cert::name::Name;
 
 mod code_gen;
+mod cert_rustcrypto;
 mod csr_rustcrypto;
-mod tbs;
+mod tbs; 
 
-fn main() {}
+fn main() {
+    // Call the test function directly
+//    test_gen_mldsa87_cert_template();
+//    test_gen_fmc_alias_cert_template();
+}
+
+// Make the test function public so it can be called from main
+// #[test]
+// pub fn test_gen_mldsa87_cert_template() {
+//     use crate::code_gen::CodeGen;
+//     use crate::cert_rustcrypto::CertTemplateBuilder;
+//     use ml_dsa::MlDsa87;
+//     use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+
+//     // Create a temporary directory for output
+//     let temp_dir = std::env::temp_dir();
+//     let out_dir = temp_dir.to_str().unwrap();
+
+//     // Set up key usage for certificate signing
+//     let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
+
+//     // Create the Certificate template builder with ML-DSA-87
+//     let bldr = CertTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
+//         .add_ueid_ext(&[0xFF; 17])
+//         .add_basic_constraints_ext(true, 5)
+//         .add_key_usage_ext(key_usage);
+
+//     // Generate the template with subject and issuer names
+//     let template = bldr.tbs_template("ML-DSA-87 Test Subject", "ML-DSA-87 Test Issuer");
+
+//     // Generate code from the template
+//     CodeGen::gen_code("MlDsa87CertTbs", template, out_dir);
+
+//     println!("Generated ML-DSA-87 Certificate template code in: {}", out_dir);
+// }
+
+#[test]
+fn test_gen_fmc_alias_cert_template() {
+    use crate::cert_rustcrypto::CertTemplateBuilder;
+    use crate::code_gen::CodeGen;
+    use ml_dsa::MlDsa87;
+    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+
+    // Create a temporary directory for output
+    let temp_dir = std::env::temp_dir();
+    let out_dir = temp_dir.to_str().unwrap();
+
+    // Create KeyUsage with key_cert_sign set to true
+    let key_usage = KeyUsage(KeyUsages::KeyCertSign.into());
+
+    // Build the FMC Alias certificate template
+    let bldr = CertTemplateBuilder::<ml_dsa::KeyPair<MlDsa87>>::new()
+        .add_basic_constraints_ext(true, 3)
+        .add_key_usage_ext(key_usage)
+        .add_ueid_ext(&[0xFF; 17]);
+
+    // Generate the template with subject and issuer CN
+    let template = bldr.tbs_template("Caliptra 1.0 FMC Alias", "Caliptra 1.0 LDevID");
+    
+    // Generate the code
+    CodeGen::gen_code("FmcAliasCertTbsMlDsa87", template, out_dir);
+    
+    println!("Generated FMC Alias certificate template at: {}", out_dir);
+}
 
 #[test]
 fn test_gen_mldsa87_csr_template() {
@@ -37,68 +96,4 @@ fn test_gen_mldsa87_csr_template() {
     CodeGen::gen_code("MlDsa87CsrTbs", template, out_dir);
 
     println!("Generated ML-DSA-87 CSR template code in: {}", out_dir);
-}
-
-#[test]
-fn test() {
-    let name = Name::from_str("CN=test").unwrap();
-
-    let mut rng = rand::thread_rng();
-    let kp = MlDsa87::key_gen(&mut rng);
-
-    let builder = RequestBuilder::new(name).unwrap();
-
-    let res = builder.build(&kp).unwrap();
-
-    let der = res.to_der().unwrap();
-
-    // Decode the DER data back into a CertReq to verify it worked
-    let decoded = x509_cert::request::CertReq::from_der(&der).unwrap();
-
-    // Print subject names
-    println!("\nSubject names:");
-    for name in decoded.info.subject.iter_rdn() {
-        let attr = name.iter().next().unwrap();
-        println!("  {}: {:?}", attr.oid, attr.value);
-    }
-
-    // Print public key info
-    println!("\nPublic key:");
-    println!("  Algorithm: {}", decoded.info.public_key.algorithm.oid);
-    println!(
-        "  Parameters: {:?}",
-        decoded.info.public_key.algorithm.parameters
-    );
-    println!("  Key: {:?}", decoded.info.public_key.subject_public_key);
-
-    // Print attributes and extensions
-    println!("\nAttributes:");
-    for attr in decoded.info.attributes.iter() {
-        println!("  OID: {}", attr.oid);
-        for value in attr.values.iter() {
-            if attr.oid.to_string() == "1.2.840.113549.1.9.14" {
-                // This is extensionRequest
-                if let Ok(extensions) = value.decode_as::<x509_cert::ext::Extensions>() {
-                    println!("  Extensions:");
-                    for ext in extensions.iter() {
-                        println!("    ID: {}", ext.extn_id);
-                        println!("    Critical: {}", ext.critical);
-                        println!("    Value: {:?}", ext.extn_value);
-                    }
-                }
-            } else {
-                println!("    Value: {:?}", value);
-            }
-        }
-    }
-
-    // Write both DER and PEM formats
-    std::fs::write("cert.der", &der).unwrap();
-    std::fs::write(
-        "cert.pem",
-        res.to_pem(x509_cert::der::pem::LineEnding::LF).unwrap(),
-    )
-    .unwrap();
-
-    assert_eq!(decoded.to_der().unwrap(), der);
 }

@@ -134,7 +134,7 @@ where
 
         // Format the subject name with CN and serialNumber
         let key_hash = hex::encode(Sha256::digest(&pk_bytes)).to_uppercase();
-        let subject = format!("CN={},2.5.4.5={}", subject_cn, key_hash);
+        let subject = format!("CN={},serialNumber={}", subject_cn, key_hash);
         let name = Name::from_str(&subject).unwrap();
         let param = CsrTemplateParam {
             tbs_param: TbsParam::new("SUBJECT_SN", 0, key_hash.len()),
@@ -148,12 +148,53 @@ where
             builder.add_extension(&basic_constraints).unwrap();
         }
         if let Some(ueid) = self.tcg_ueid {
-            println!("{:?}", ueid);
             builder.add_extension(&ueid).unwrap();
         }
         let req = builder.build(&key).unwrap();
-        println!("{:?}", req);
         let der = req.to_der().unwrap();
+
+        // Decode the DER data back into a CertReq to verify it worked
+        let decoded = x509_cert::request::CertReq::from_der(&der).unwrap();
+
+        // Print subject names
+        println!("\nSubject names:");
+        for name in decoded.info.subject.iter_rdn() {
+            let attr = name.iter().next().unwrap();
+            println!("  {}: {:?}", attr.oid, attr.value);
+        }
+
+        // Print public key info
+        println!("\nPublic key:");
+        println!("  Algorithm: {}", decoded.info.public_key.algorithm.oid);
+        println!(
+            "  Parameters: {:?}",
+            decoded.info.public_key.algorithm.parameters
+        );
+        println!("  Key: {:?}", decoded.info.public_key.subject_public_key);
+
+        // Print attributes and extensions
+        println!("\nAttributes:");
+        for attr in decoded.info.attributes.iter() {
+            println!("  OID: {}", attr.oid);
+            for value in attr.values.iter() {
+                if attr.oid.to_string() == "1.2.840.113549.1.9.14" {
+                    // This is extensionRequest
+                    if let Ok(extensions) = value.decode_as::<x509_cert::ext::Extensions>() {
+                        println!("  Extensions:");
+                        for ext in extensions.iter() {
+                            println!("    ID: {}", ext.extn_id);
+                            println!("    Critical: {}", ext.critical);
+                            println!("    Value: {:?}", ext.extn_value);
+                        }
+                    }
+                } else {
+                    println!("    Value: {:?}", value);
+                }
+            }
+        }
+
+        // Write both DER and PEM formats
+        std::fs::write("cert.der", &der).unwrap();
 
         // TODO move get_tbs from x509_openssl
         // Retrieve the To be signed portion from the CSR
